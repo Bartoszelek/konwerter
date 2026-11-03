@@ -407,7 +407,17 @@ class ConvertService : Service() {
         job.status = "run"
         job.progress = 0
         job.started = System.currentTimeMillis()
-        val out = File(cacheDir, "out_${System.currentTimeMillis()}.${Targets.ext(job.target)}")
+        // stare pliki robocze (np. po przerwanej konwersji)
+        work().listFiles()?.forEach { if (System.currentTimeMillis() - it.lastModified() > 60_000) it.delete() }
+        val need = (job.size * 1.15).toLong() + 700L * 1024 * 1024
+        val free = work().usableSpace
+        if (job.size > 0 && free < need && job.target != "gif") {
+            job.status = "error"
+            job.error = "Za mało miejsca w telefonie: potrzeba ok. ${gb(need)}, wolne ${gb(free)}. Usuń coś albo wybierz mniejszą rozdzielczość."
+            next()
+            return
+        }
+        val out = File(work(), "out_${System.currentTimeMillis()}.${Targets.ext(job.target)}")
         temp = out
         update(job)
         val audioMimes = job.mimes.filter { it.startsWith("audio/") }
@@ -435,6 +445,11 @@ class ConvertService : Service() {
         }
     }
 
+    /** Folder roboczy, którego Android nie czyści przy braku miejsca (w przeciwieństwie do pamięci podręcznej). */
+    private fun work(): File = (getExternalFilesDir("praca") ?: filesDir).apply { mkdirs() }
+
+    private fun gb(b: Long) = String.format(Locale("pl"), "%.1f GB", b / 1073741824.0)
+
     private fun bitrate(job: Job, outH: Int): Int {
         val base = when {
             outH >= 2000 -> 20_000_000
@@ -456,7 +471,7 @@ class ConvertService : Service() {
     private fun hybrid(job: Job, out: File) {
         job.viaVlc = true
         job.progress = 0
-        val wav = File(cacheDir, "pcm_${System.currentTimeMillis()}.wav")
+        val wav = File(work(), "pcm_${System.currentTimeMillis()}.wav")
         job.wav = wav
         val share = if (job.target == "wav") 100 else 45
         VlcConvert.toWav(this, job, wav, { p -> job.progress = p * share / 100; update(job) }, {
@@ -543,6 +558,7 @@ class ConvertService : Service() {
             out.delete(); job.status = "cancel"; next(); return
         }
         try {
+            if (!out.exists() || out.length() == 0L) throw IllegalStateException("Plik wynikowy zniknął przed zapisem – prawdopodobnie zabrakło miejsca w telefonie")
             val base = job.name.substringBeforeLast('.')
             val gif = job.target == "gif"
             val audio = !gif && (Targets.isAudio(job.target) || !job.hasVideo)
@@ -587,7 +603,7 @@ class ConvertService : Service() {
         val decoderProblem = msg.contains("DECOD", true) || msg.contains("UNSUPPORTED", true) || msg.contains("FORMAT", true)
         if (!job.viaVlc && !Queue.cancel && decoderProblem && !job.removeAudio && job.target != "gif") {
             // druga próba: dźwięk przez VLC, obraz z oryginału
-            hybrid(job, temp ?: File(cacheDir, "out_${System.currentTimeMillis()}.${Targets.ext(job.target)}"))
+            hybrid(job, temp ?: File(work(), "out_${System.currentTimeMillis()}.${Targets.ext(job.target)}"))
             return
         }
         job.wav?.delete()
