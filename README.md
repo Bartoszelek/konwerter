@@ -1,6 +1,6 @@
 # Konwerter – zmiana formatów wideo i audio (Android, bez internetu)
 
-- MOV, MKV, AVI, WebM, 3GP, TS → MP4 (H.264 + AAC) albo szybkie MP4 bez kodowania
+- MOV, MKV, AVI, WebM, 3GP, TS → MP4 (H.264), MP4 HEVC (H.265), MOV, 3GP, GIF albo szybkie MP4 bez kodowania
 - zmniejszanie: 1080p / 720p / 480p, jakość wysoka / średnia / mały plik, usuwanie dźwięku
 - dźwięk z filmu i audio (MP3, FLAC, OGG, OPUS, WAV, AMR) → M4A albo WAV
 - wiele plików naraz, w tle z powiadomieniem; wyniki w Filmy/Konwerter i Muzyka/Konwerter

@@ -42,31 +42,54 @@ import java.util.Locale
 
 /** Formaty docelowe. */
 object Targets {
-    val ALL = listOf(
-        "mp4" to "MP4 (zgodny)",
+    val VIDEO = listOf(
+        "mp4" to "MP4",
+        "mp4hevc" to "MP4 HEVC",
         "mp4fast" to "MP4 szybko",
-        "m4a" to "M4A (audio)",
-        "wav" to "WAV (audio)"
+        "mov" to "MOV",
+        "3gp" to "3GP",
+        "gif" to "GIF"
     )
+    val AUDIO = listOf("m4a" to "M4A", "wav" to "WAV")
+    val ALL = VIDEO + AUDIO
 
     fun label(t: String) = ALL.firstOrNull { it.first == t }?.second ?: t
     fun ext(t: String) = when (t) {
         "m4a" -> "m4a"
         "wav" -> "wav"
+        "mov" -> "mov"
+        "3gp" -> "3gp"
+        "gif" -> "gif"
         else -> "mp4"
     }
 
     fun isAudio(t: String) = t == "m4a" || t == "wav"
+
+    /** Formaty, w których wideo jest kodowane od nowa (można zmienić rozdzielczość i jakość). */
+    fun encodes(t: String) = t == "mp4" || t == "mp4hevc" || t == "mov" || t == "3gp"
+
+    fun mime(t: String, audioOnly: Boolean) = when {
+        t == "wav" -> "audio/x-wav"
+        t == "gif" -> "image/gif"
+        t == "m4a" || audioOnly -> "audio/mp4"
+        t == "mov" -> "video/quicktime"
+        t == "3gp" -> "video/3gpp"
+        else -> "video/mp4"
+    }
 }
 
 /** Jeden plik w kolejce. */
-class Job(val uri: Uri, val name: String, val info: String, val hasVideo: Boolean, val w: Int, val h: Int, val size: Long) {
+class Job(val uri: Uri, val name: String, val info: String, val hasVideo: Boolean, val w: Int, val h: Int, val size: Long, val rot: Int = 0) {
     var status = "wait"      // wait, run, done, error, cancel
     var progress = 0
     var target = "mp4"
     var height = 0
     var quality = "high"
     var removeAudio = false
+    var gifSeconds = 10
+    var gifWidth = 480
+    var gifFps = 10
+    var gifStart = 0
     var outUri: Uri? = null
     var outSize = 0L
     var error = ""
@@ -98,6 +121,7 @@ object Queue {
         var w = 0
         var h = 0
         var hasVideo = false
+        var rotation = 0
         val parts = ArrayList<String>()
         val r = MediaMetadataRetriever()
         try {
@@ -108,6 +132,7 @@ object Queue {
                 w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
                 h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
                 val rot = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+                rotation = rot
                 if (rot == 90 || rot == 270) {
                     val t = w; w = h; h = t
                 }
@@ -131,7 +156,7 @@ object Queue {
             parts.add("format może nie być obsługiwany")
         }
         if (size > 0) parts.add(sizeText(size))
-        return Job(uri, name, parts.joinToString(" · "), hasVideo, w, h, size)
+        return Job(uri, name, parts.joinToString(" · "), hasVideo, w, h, size, rotation)
     }
 
     fun codecName(mime: String) = when (mime) {
@@ -341,10 +366,11 @@ class ConvertService : Service() {
         val out = File(cacheDir, "out_${System.currentTimeMillis()}.${Targets.ext(job.target)}")
         temp = out
         update(job)
-        if (job.target == "wav") {
+        if (job.target == "wav" || job.target == "gif") {
             Thread {
                 try {
-                    Wav.convert(this, job.uri, out) { p -> job.progress = p; h.post { update(job) } }
+                    if (job.target == "gif") Gif.convert(this, job, out) { p -> job.progress = p; h.post { update(job) } }
+                    else Wav.convert(this, job.uri, out) { p -> job.progress = p; h.post { update(job) } }
                     h.post { done(job, out) }
                 } catch (e: Exception) {
                     h.post { fail(job, e.message ?: "błąd dekodowania") }
@@ -378,7 +404,7 @@ class ConvertService : Service() {
         val audioOnly = job.target == "m4a" || !job.hasVideo
         val fast = job.target == "mp4fast"
         val b = Transformer.Builder(this)
-        if (!audioOnly && !fast) b.setVideoMimeType(MimeTypes.VIDEO_H264)
+        if (!audioOnly && !fast) b.setVideoMimeType(if (job.target == "mp4hevc") MimeTypes.VIDEO_H265 else MimeTypes.VIDEO_H264)
         if (!job.removeAudio || audioOnly) b.setAudioMimeType(MimeTypes.AUDIO_AAC)
         // rozdzielczość: krótszy bok = wybrana wysokość (pion i poziom)
         val effects = ArrayList<androidx.media3.common.Effect>()
@@ -435,20 +461,25 @@ class ConvertService : Service() {
         }
         try {
             val base = job.name.substringBeforeLast('.')
-            val ext = Targets.ext(job.target)
-            val audio = Targets.isAudio(job.target) || !job.hasVideo
-            val mime = when (ext) {
-                "wav" -> "audio/x-wav"
-                "m4a" -> "audio/mp4"
-                else -> if (audio) "audio/mp4" else "video/mp4"
-            }
+            val gif = job.target == "gif"
+            val audio = !gif && (Targets.isAudio(job.target) || !job.hasVideo)
+            val ext = if (audio && !Targets.isAudio(job.target)) "m4a" else Targets.ext(job.target)
+            val mime = Targets.mime(job.target, audio)
             val cv = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, "$base.$ext")
                 put(MediaStore.MediaColumns.MIME_TYPE, mime)
-                put(MediaStore.MediaColumns.RELATIVE_PATH, if (audio) "Music/Konwerter" else "Movies/Konwerter")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, when {
+                    gif -> "Pictures/Konwerter"
+                    audio -> "Music/Konwerter"
+                    else -> "Movies/Konwerter"
+                })
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
-            val coll = if (audio) MediaStore.Audio.Media.EXTERNAL_CONTENT_URI else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            val coll = when {
+                gif -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                audio -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+                else -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            }
             val uri = contentResolver.insert(coll, cv) ?: throw IllegalStateException("Nie mogę zapisać pliku")
             contentResolver.openOutputStream(uri)?.use { o -> out.inputStream().use { it.copyTo(o) } }
             contentResolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)

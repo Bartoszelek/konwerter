@@ -16,6 +16,10 @@ object Store {
     var height = 0
     var quality = "high"
     var removeAudio = false
+    var gifSeconds = 10
+    var gifWidth = 480
+    var gifFps = 10
+    var gifStart = 0
 
     @Synchronized
     fun init(ctx: Context) {
@@ -34,6 +38,9 @@ object Store {
             height = o.optInt("height")
             quality = o.optString("quality", "high")
             removeAudio = o.optBoolean("removeAudio")
+            gifSeconds = o.optInt("gifSeconds", 10)
+            gifWidth = o.optInt("gifWidth", 480)
+            gifFps = o.optInt("gifFps", 10)
         } catch (e: Exception) {
         }
     }
@@ -43,7 +50,8 @@ object Store {
             file?.writeText(
                 JSONObject().put("eink", eink).put("invert", invert).put("theme", theme).put("mode", mode)
                     .put("ghToken", ghToken).put("target", target).put("height", height).put("quality", quality)
-                    .put("removeAudio", removeAudio).toString()
+                    .put("removeAudio", removeAudio).put("gifSeconds", gifSeconds).put("gifWidth", gifWidth)
+                    .put("gifFps", gifFps).toString()
             )
         } catch (e: Exception) {
         }

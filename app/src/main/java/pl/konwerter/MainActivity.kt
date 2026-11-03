@@ -306,6 +306,10 @@ class MainActivity : Activity() {
             j.height = Store.height
             j.quality = Store.quality
             j.removeAudio = Store.removeAudio
+            j.gifSeconds = Store.gifSeconds
+            j.gifWidth = Store.gifWidth
+            j.gifFps = Store.gifFps
+            j.gifStart = Store.gifStart
         }
         startForegroundService(Intent(this, ConvertService::class.java))
         h.postDelayed({ render() }, 200)
@@ -326,15 +330,21 @@ class MainActivity : Activity() {
         return " · zostało ok. " + Queue.time(left)
     }
 
-    private fun share(uri: Uri, video: Boolean) {
-        val i = Intent(Intent.ACTION_SEND).setType(if (video) "video/mp4" else "audio/*").putExtra(Intent.EXTRA_STREAM, uri)
+    private fun kindMime(j: Job): String = when {
+        j.target == "gif" -> "image/gif"
+        Targets.isAudio(j.target) || !j.hasVideo -> "audio/*"
+        else -> "video/*"
+    }
+
+    private fun share(uri: Uri, mime: String) {
+        val i = Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, uri)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         startActivity(Intent.createChooser(i, "Udostępnij"))
     }
 
-    private fun open(uri: Uri, video: Boolean) {
+    private fun open(uri: Uri, mime: String) {
         try {
-            startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, if (video) "video/*" else "audio/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+            startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
         } catch (e: Exception) {
             toast("Brak aplikacji do odtworzenia")
         }
@@ -364,7 +374,7 @@ class MainActivity : Activity() {
             hero.addView(top)
             hero.addView(tv("Konwerter", 34f, true, Color.WHITE), lp(top = 2))
             val done = Queue.jobs.count { it.status == "done" }
-            hero.addView(tv(if (Queue.jobs.isEmpty()) "MOV, MKV, AVI, WebM → MP4 · audio → M4A / WAV" else "${Queue.jobs.size} plików · gotowe: $done", 13f, false, Theme.withAlpha(Color.WHITE, 0.85f)))
+            hero.addView(tv(if (Queue.jobs.isEmpty()) "MP4 · HEVC · MOV · 3GP · GIF · M4A · WAV" else "${Queue.jobs.size} plików · gotowe: $done", 13f, false, Theme.withAlpha(Color.WHITE, 0.85f)))
             col.addView(hero, lp(top = 4))
         }
 
@@ -385,36 +395,71 @@ class MainActivity : Activity() {
         section(col, "Zamień na")
         val p = panel(col)
         val anyVideo = Queue.jobs.any { it.status == "wait" && it.hasVideo } || Queue.jobs.none { it.status == "wait" }
-        val targets = Targets.ALL.filter { anyVideo || Targets.isAudio(it.first) }
-        val grid = vbox()
-        targets.chunked(2).forEach { row ->
-            val r = hbox()
-            row.forEach { (k, label) ->
-                r.addView(btn(label, Store.target == k, 14f) { Store.target = k; Store.save(); render() }, lp(0, WRAP, 1f).apply { leftMargin = dp(3); rightMargin = dp(3) })
+        fun group(title: String, list: List<Pair<String, String>>) {
+            p.addView(tv(title, 13f, true, dim), lp(top = 10))
+            list.chunked(3).forEach { row ->
+                val r = hbox()
+                row.forEach { (k, label) ->
+                    r.addView(btn(label, Store.target == k, 14f) { Store.target = k; Store.save(); render() }, lp(0, WRAP, 1f).apply { leftMargin = dp(3); rightMargin = dp(3) })
+                }
+                repeat(3 - row.size) { r.addView(View(this), lp(0, 1, 1f)) }
+                p.addView(r, lp(top = 6))
             }
-            if (row.size == 1) r.addView(View(this), lp(0, 1, 1f))
-            grid.addView(r, lp(top = 6))
         }
-        p.addView(grid)
+        if (anyVideo) group("Wideo", Targets.VIDEO)
+        group("Audio", Targets.AUDIO)
         p.addView(tv(when (Store.target) {
-            "mp4" -> "Wideo H.264 + dźwięk AAC. Otworzy się wszędzie (WhatsApp, telewizor, komputer, iPhone)."
-            "mp4fast" -> "Tylko zmiana „opakowania” na MP4, bez ponownego kodowania. Kilka sekund, zero straty jakości. Działa, gdy wideo jest w H.264/HEVC (np. MOV z iPhone'a)."
-            "m4a" -> "Sam dźwięk w AAC – mały plik, dobra jakość (np. z filmu, MP3, FLAC, OGG)."
+            "mp4" -> "H.264 + AAC. Otworzy się wszędzie: WhatsApp, telewizor, komputer, iPhone."
+            "mp4hevc" -> "H.265 – ok. 40% mniejszy plik przy tej samej jakości. Nowsze telefony, TV i komputery (Windows może wymagać dodatku HEVC)."
+            "mp4fast" -> "Tylko zmiana „opakowania” na MP4, bez kodowania. Kilka sekund, zero straty jakości. Dla wideo w H.264/HEVC (np. MOV z iPhone'a)."
+            "mov" -> "Format Apple QuickTime (H.264 + AAC) – do iPhone'a, Maca, iMovie i Final Cut."
+            "3gp" -> "Bardzo mały plik na stare telefony i MMS. Najlepiej z 480p i jakością „Mały plik”."
+            "gif" -> "Animacja bez dźwięku z wybranego fragmentu – do komunikatorów, prezentacji i stron."
+            "m4a" -> "Sam dźwięk w AAC – mały plik, dobra jakość (z filmu albo z MP3, FLAC, OGG…)."
             else -> "Dźwięk bez kompresji – duży plik, idealny do edycji."
         }, 13f, color = dim), lp(top = 10))
-        if (Store.target == "mp4") {
-            seg(p, "Rozdzielczość", listOf("Oryginał" to (Store.height == 0), "1080p" to (Store.height == 1080), "720p" to (Store.height == 720), "480p" to (Store.height == 480))) {
-                Store.height = listOf(0, 1080, 720, 480)[it]; Store.save(); render()
+        if (Targets.encodes(Store.target)) {
+            seg(p, "Rozdzielczość", listOf("Oryginał" to (Store.height == 0), "1080p" to (Store.height == 1080), "720p" to (Store.height == 720), "480p" to (Store.height == 480), "360p" to (Store.height == 360))) {
+                Store.height = listOf(0, 1080, 720, 480, 360)[it]; Store.save(); render()
             }
             seg(p, "Jakość", listOf("Wysoka" to (Store.quality == "high"), "Średnia" to (Store.quality == "medium"), "Mały plik" to (Store.quality == "small"))) {
                 Store.quality = listOf("high", "medium", "small")[it]; Store.save(); render()
             }
         }
-        if (Store.target == "mp4" || Store.target == "mp4fast") {
+        if (Targets.encodes(Store.target) || Store.target == "mp4fast") {
             seg(p, "Dźwięk", listOf("Zostaw" to !Store.removeAudio, "Usuń (wyciszony film)" to Store.removeAudio)) {
                 Store.removeAudio = it == 1; Store.save(); render()
             }
         }
+        if (Store.target == "gif") {
+            p.addView(tv("Początek fragmentu (sekunda filmu)", 15f), lp(top = 12))
+            val e = EditText(this).apply {
+                setText(Store.gifStart.toString())
+                inputType = InputType.TYPE_CLASS_NUMBER
+                setTextColor(fg)
+                background = if (Store.eink) round(bg, 10, 2, fg) else round(bg, 14, 1)
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+                addTextChangedListener(object : android.text.TextWatcher {
+                    override fun beforeTextChanged(x: CharSequence?, a1: Int, a2: Int, a3: Int) {}
+                    override fun onTextChanged(x: CharSequence?, a1: Int, a2: Int, a3: Int) {}
+                    override fun afterTextChanged(x: android.text.Editable?) {
+                        Store.gifStart = x?.toString()?.toIntOrNull() ?: 0
+                    }
+                })
+            }
+            p.addView(e, LinearLayout.LayoutParams(dp(120), WRAP).apply { topMargin = dp(6) })
+            seg(p, "Długość", listOf(3, 5, 10, 20, 30).map { "$it s" to (Store.gifSeconds == it) }) {
+                Store.gifSeconds = listOf(3, 5, 10, 20, 30)[it]; Store.save(); render()
+            }
+            seg(p, "Szerokość", listOf(320, 480, 640, 800).map { "$it px" to (Store.gifWidth == it) }) {
+                Store.gifWidth = listOf(320, 480, 640, 800)[it]; Store.save(); render()
+            }
+            seg(p, "Płynność", listOf(8, 10, 15).map { "$it kl/s" to (Store.gifFps == it) }) {
+                Store.gifFps = listOf(8, 10, 15)[it]; Store.save(); render()
+            }
+            p.addView(tv("Większa szerokość, płynność i długość = większy plik. Do komunikatorów zwykle wystarcza 480 px, 10 kl/s, do 10 s.", 12f, color = dim), lp(top = 8))
+        }
+        p.addView(tv("Otwiera też MKV, AVI, WebM, TS, FLV i inne – zapis do tych formatów nie jest możliwy bez dodatkowych bibliotek, ale MP4 odtworzy się wszędzie tam, gdzie one.", 12f, color = dim), lp(top = 12))
 
         // kolejka
         if (Queue.jobs.isNotEmpty()) {
@@ -432,7 +477,7 @@ class MainActivity : Activity() {
                 if (j.status == "wait" && !Queue.running) r.addView(icon(R.drawable.ic_close, 22, dim) { Queue.jobs.remove(j); render() })
                 c.addView(r)
                 if (j.status != "wait" || Queue.running) {
-                    val target = tv("→ " + Targets.label(j.target) + if (j.target == "mp4" && j.height > 0) " ${j.height}p" else "", 12f, true, accent)
+                    val target = tv("→ " + Targets.label(j.target) + if (Targets.encodes(j.target) && j.height > 0) " ${j.height}p" else "", 12f, true, accent)
                     if (j.status != "wait") c.addView(target, lp(top = 6))
                     val pb = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
                         max = 100
@@ -446,12 +491,16 @@ class MainActivity : Activity() {
                 }
                 val out = j.outUri
                 if (j.status == "done" && out != null) {
-                    val video = !Targets.isAudio(j.target) && j.hasVideo
+                    val mime = kindMime(j)
                     val br = hbox()
-                    br.addView(btn("Otwórz", true, 13f) { open(out, video) }, lp(WRAP, WRAP).apply { rightMargin = dp(6) })
-                    br.addView(btn("Udostępnij", size = 13f) { share(out, video) })
+                    br.addView(btn("Otwórz", true, 13f) { open(out, mime) }, lp(WRAP, WRAP).apply { rightMargin = dp(6) })
+                    br.addView(btn("Udostępnij", size = 13f) { share(out, mime) })
                     c.addView(br, lp(top = 8))
-                    c.addView(tv("Zapisano w " + if (video) "Filmy/Konwerter" else "Muzyka/Konwerter", 12f, color = dim), lp(top = 6))
+                    c.addView(tv("Zapisano w " + when (mime) {
+                        "image/gif" -> "Obrazy/Konwerter"
+                        "audio/*" -> "Muzyka/Konwerter"
+                        else -> "Filmy/Konwerter"
+                    }, 12f, color = dim), lp(top = 6))
                 }
                 col.addView(c, lp(top = 10))
             }
@@ -467,7 +516,8 @@ class MainActivity : Activity() {
             section(col, "Co potrafi")
             val i = panel(col)
             listOf(
-                "MOV (iPhone), MKV, AVI, WebM, 3GP, TS → MP4",
+                "MOV (iPhone), MKV, AVI, WebM, 3GP, TS → MP4, MP4 HEVC, MOV, 3GP",
+                "Fragment filmu → animowany GIF",
                 "Zmniejszanie filmów: 1080p / 720p / 480p, mniejszy plik do WhatsAppa",
                 "Wyciąganie dźwięku z filmu do M4A albo WAV",
                 "MP3, FLAC, OGG, OPUS, WAV, AMR → M4A albo WAV",
@@ -514,7 +564,7 @@ class MainActivity : Activity() {
 
         section(col, "Gdzie są pliki")
         val f = panel(col)
-        f.addView(tv("Filmy: Filmy/Konwerter (widać w Galerii)\nDźwięk: Muzyka/Konwerter\nOryginały zostają nietknięte.", 14f), lp(top = 6))
+        f.addView(tv("Filmy: Filmy/Konwerter (widać w Galerii)\nGIF: Obrazy/Konwerter\nDźwięk: Muzyka/Konwerter\nOryginały zostają nietknięte.", 14f), lp(top = 6))
 
         section(col, "Aktualizacje")
         val u = panel(col)
