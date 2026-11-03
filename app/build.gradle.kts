@@ -15,6 +15,7 @@ android {
         targetSdk = 34
         versionCode = runNumber
         versionName = "1.$runNumber"
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
 
     signingConfigs {
@@ -38,8 +39,12 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
     lint { abortOnError = false; checkReleaseBuilds = false }
+    packaging { jniLibs { useLegacyPackaging = true } }
+}
+
+kotlin {
+    compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
 }
 
 dependencies {
@@ -47,4 +52,5 @@ dependencies {
     implementation("androidx.media3:media3-transformer:1.4.1")
     implementation("androidx.media3:media3-effect:1.4.1")
     implementation("androidx.media3:media3-common:1.4.1")
+    implementation("org.videolan.android:libvlc-all:3.7.6")
 }

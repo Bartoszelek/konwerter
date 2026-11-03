@@ -1,20 +1,15 @@
-# Konwerter – zmiana formatów wideo i audio (Android, bez internetu)
+# Player – odtwarzacz wideo i audio (silnik VLC) + Konwerter
 
-- MOV, MKV, AVI, WebM, 3GP, TS → MP4 (H.264), MP4 HEVC (H.265), MOV, 3GP, GIF albo szybkie MP4 bez kodowania
-- zmniejszanie: 1080p / 720p / 480p, jakość wysoka / średnia / mały plik, usuwanie dźwięku
-- dźwięk z filmu i audio (MP3, FLAC, OGG, OPUS, WAV, AMR) → M4A albo WAV
-- wiele plików naraz, w tle z powiadomieniem; wyniki w Filmy/Konwerter i Muzyka/Konwerter
-- Udostępnij → Konwerter z Galerii i Moich plików; motywy kolorów i e-ink; aktualizacje w aplikacji
+- odtwarza praktycznie wszystko (MKV, AVI, MOV, WMV, FLV, TS, WebM, dźwięk AC3/DTS/TrueHD, FLAC, APE…)
+- biblioteka: Wideo (foldery, „Kontynuuj oglądanie”), Muzyka (utwory, wykonawcy, albumy, foldery), Playlisty, Historia
+- gesty: jasność / głośność / przewijanie, podwójne stuknięcie ±10 s, szczypanie = wypełnij
+- napisy (z pliku, z filmu, pobieranie z OpenSubtitles), ścieżki dźwięku, przesunięcia, korektor
+- prędkość 0,25–4×, A-B, wyłącznik czasowy, rozdziały, blokada ekranu, obrót, zrzut klatki
+- odtwarzanie w tle, pływające okienko (PiP), ekran blokady, słuchawki, Android Auto
+- sieć: adres URL, IPTV (M3U), udziały SMB i serwery DLNA, wysyłanie na Chromecast / Google TV
+- Konwerter: MP4, MP4 HEVC, MP4 · dźwięk AAC (VLC), MOV, 3GP, GIF, M4A, WAV; wycinanie fragmentu z odtwarzacza
 
-## Pierwsze budowanie
-1. github.com/new → nazwa `konwerter`, Private, bez README.
-2. Termux:
+Aktualizacja:
 ```
-cd ~ && unzip -o "$(ls -t ~/storage/downloads/Konwerter*.zip | head -1)" && cd Konwerter && git init && git add . && git -c user.name=ja -c user.email=ja@x.pl commit -m start && git branch -M main && git remote add origin "$(git -C ~/Audioteka remote get-url origin | sed 's/audioteka/konwerter/')" && git push -u origin main
-```
-3. github.com/Bartoszelek/konwerter/releases → konwerter.apk → zainstaluj, w Ustawieniach wklej token.
-
-## Kolejne wersje
-```
-cd ~ && unzip -o "$(ls -t ~/storage/downloads/Konwerter*.zip | head -1)" && cd Konwerter && git add -A && git -c user.name=ja -c user.email=ja@x.pl commit -m aktualizacja && git push
+cd ~ && unzip -o "$(ls -t ~/storage/downloads/Konwerter*.zip | head -1)" && cd Konwerter && git add -A && git -c user.name=ja -c user.email=ja@x.pl commit -m player && git push
 ```
