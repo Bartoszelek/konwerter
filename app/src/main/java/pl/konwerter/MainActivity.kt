@@ -1166,10 +1166,14 @@ class MainActivity : Ui() {
 
     private fun installedVersion(): Long = try {
         packageManager.getPackageInfo(packageName, 0).longVersionCode
+    } catch (e: Exception) {
+        0L
     }
 
     private fun versionName(): String = try {
         packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    } catch (e: Exception) {
+        "?"
     }
 
     private fun checkUpdate(manual: Boolean) {
