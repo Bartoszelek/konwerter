@@ -28,6 +28,7 @@ import androidx.media3.effect.Presentation
 import androidx.media3.transformer.Composition
 import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
+import androidx.media3.transformer.EditedMediaItemSequence
 import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
@@ -88,6 +89,8 @@ class Job(val uri: Uri, val name: String, val info: String, val hasVideo: Boolea
     var clipStart = -1L
     var clipEnd = -1L
     var viaVlc = false
+    var mimes: List<String> = emptyList()
+    var wav: File? = null
     var status = "wait"      // wait, run, done, error, cancel
     var progress = 0
     var target = "mp4"
@@ -156,19 +159,45 @@ object Queue {
             }
         }
         var codecs: List<String> = emptyList()
+        var mimes: List<String> = emptyList()
         try {
             val ex = MediaExtractor()
             ex.setDataSource(ctx, uri, null)
-            codecs = (0 until ex.trackCount).mapNotNull { k -> ex.getTrackFormat(k).getString(MediaFormat.KEY_MIME)?.let { codecName(it) } }.distinct()
+            mimes = (0 until ex.trackCount).mapNotNull { k -> ex.getTrackFormat(k).getString(MediaFormat.KEY_MIME) }.distinct()
+            codecs = mimes.map { codecName(it) }.distinct()
             if (codecs.isNotEmpty()) parts.add(codecs.joinToString(" + "))
             ex.release()
         } catch (e: Exception) {
             parts.add("otworzy go silnik VLC")
         }
-        if (codecs.any { it in Targets.HARD_AUDIO }) parts.add("dźwięk do zamiany na AAC")
+        val audioMimes = mimes.filter { it.startsWith("audio/") }
+        if (audioMimes.isNotEmpty() && audioMimes.none { canDecode(it) }) parts.add("dźwięk ${codecs.filter { it in Targets.HARD_AUDIO }.joinToString()} – przerobi go silnik VLC")
         if (size > 0) parts.add(sizeText(size))
         return Job(uri, name, parts.joinToString(" · "), hasVideo || name.lowercase().let { n -> listOf(".mkv", ".avi", ".wmv", ".flv", ".ts", ".m2ts", ".rmvb", ".vob", ".mpg", ".mpeg", ".mov", ".webm").any { n.endsWith(it) } },
-            w, h, size, rotation, codecs)
+            w, h, size, rotation, codecs).also { it.mimes = mimes }
+    }
+
+    /** Czy telefon ma własny dekoder tego formatu. */
+    fun canDecode(mime: String): Boolean = try {
+        android.media.MediaCodecList(android.media.MediaCodecList.ALL_CODECS).codecInfos
+            .any { !it.isEncoder && it.supportedTypes.any { t -> t.equals(mime, true) } }
+    } catch (e: Exception) {
+        false
+    }
+
+    /** Ścieżka pliku (gdy da się ją odczytać) – VLC czyta wtedy szybciej i pewniej. */
+    fun pathOf(ctx: Context, uri: Uri): String? {
+        if (uri.scheme == "file") return uri.path
+        try {
+            ctx.contentResolver.query(uri, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val p = c.getString(0)
+                    if (p != null && File(p).canRead()) return p
+                }
+            }
+        } catch (e: Exception) {
+        }
+        return null
     }
 
     fun codecName(mime: String) = when (mime) {
@@ -381,11 +410,10 @@ class ConvertService : Service() {
         val out = File(cacheDir, "out_${System.currentTimeMillis()}.${Targets.ext(job.target)}")
         temp = out
         update(job)
-        val needVlc = job.target == "mp4aac" || ((job.target == "mp4fast" || job.target == "mp4" || job.target == "mov") &&
-            (job.codecs.any { it in Targets.HARD_AUDIO } || job.codecs.isEmpty()) && job.clipStart < 0 && job.height == 0)
-        if (needVlc) {
-            job.viaVlc = true
-            VlcConvert.run(this, job, out, { p -> job.progress = p; update(job) }, { done(job, out) }, { m -> fail(job, m) })
+        val audioMimes = job.mimes.filter { it.startsWith("audio/") }
+        val hardAudio = audioMimes.isNotEmpty() && audioMimes.none { Queue.canDecode(it) }
+        if (hardAudio && !job.removeAudio && job.target != "gif") {
+            hybrid(job, out)
             return
         }
         if (job.target == "wav" || job.target == "gif") {
@@ -422,9 +450,32 @@ class ConvertService : Service() {
         }
     }
 
-    private fun startTransformer(job: Job, out: File) {
+    /**
+     * Dźwięk, którego telefon nie dekoduje (AC3, DTS…): 1) VLC → WAV stereo, 2) Android: obraz z oryginału + ten dźwięk jako AAC.
+     */
+    private fun hybrid(job: Job, out: File) {
+        job.viaVlc = true
+        job.progress = 0
+        val wav = File(cacheDir, "pcm_${System.currentTimeMillis()}.wav")
+        job.wav = wav
+        val share = if (job.target == "wav") 100 else 45
+        VlcConvert.toWav(this, job, wav, { p -> job.progress = p * share / 100; update(job) }, {
+            if (job.target == "wav") done(job, wav)
+            else try {
+                startTransformer(job, out, wav, share)
+            } catch (e: Exception) {
+                wav.delete()
+                fail(job, e.message ?: "błąd składania pliku")
+            }
+        }, { m ->
+            wav.delete()
+            fail(job, m)
+        })
+    }
+
+    private fun startTransformer(job: Job, out: File, wav: File? = null, base: Int = 0) {
         val audioOnly = job.target == "m4a" || !job.hasVideo
-        val fast = job.target == "mp4fast"
+        val fast = job.target == "mp4fast" || job.target == "mp4aac"
         val b = Transformer.Builder(this)
         if (!audioOnly && !fast) b.setVideoMimeType(if (job.target == "mp4hevc") MimeTypes.VIDEO_H265 else MimeTypes.VIDEO_H264)
         if (!job.removeAudio || audioOnly) b.setAudioMimeType(MimeTypes.AUDIO_AAC)
@@ -460,18 +511,25 @@ class ConvertService : Service() {
             .build() else MediaItem.fromUri(job.uri)
         val item = EditedMediaItem.Builder(mi)
             .setRemoveVideo(audioOnly)
-            .setRemoveAudio(job.removeAudio && !audioOnly)
+            .setRemoveAudio((job.removeAudio || wav != null) && !audioOnly)
             .setEffects(Effects(emptyList(), effects))
             .build()
         val t = b.build()
         transformer = t
-        t.start(item, out.path)
+        when {
+            wav != null && audioOnly -> t.start(EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(wav))).build(), out.path)
+            wav != null -> {
+                val audioItem = EditedMediaItem.Builder(MediaItem.fromUri(Uri.fromFile(wav))).build()
+                t.start(Composition.Builder(EditedMediaItemSequence(item), EditedMediaItemSequence(audioItem)).build(), out.path)
+            }
+            else -> t.start(item, out.path)
+        }
         val holder = ProgressHolder()
         h.post(object : Runnable {
             override fun run() {
                 if (transformer !== t || job.status != "run") return
                 if (t.getProgress(holder) == Transformer.PROGRESS_STATE_AVAILABLE) {
-                    job.progress = holder.progress
+                    job.progress = base + holder.progress * (100 - base) / 100
                     update(job)
                 }
                 h.postDelayed(this, 500)
@@ -518,6 +576,8 @@ class ConvertService : Service() {
             job.error = e.message ?: "zapis nieudany"
         }
         out.delete()
+        job.wav?.delete()
+        job.wav = null
         temp = null
         next()
     }
@@ -525,21 +585,20 @@ class ConvertService : Service() {
     private fun fail(job: Job, msg: String) {
         transformer = null
         val decoderProblem = msg.contains("DECOD", true) || msg.contains("UNSUPPORTED", true) || msg.contains("FORMAT", true)
-        if (!job.viaVlc && !Queue.cancel && decoderProblem && !Targets.isAudio(job.target) && job.target != "gif" && job.target != "mp4hevc" && job.target != "3gp") {
-            // druga próba silnikiem VLC: obraz bez zmian, dźwięk → AAC
-            val out = temp ?: File(cacheDir, "out_${System.currentTimeMillis()}.mp4")
-            job.viaVlc = true
-            job.progress = 0
-            VlcConvert.run(this, job, out, { p -> job.progress = p; update(job) }, { done(job, out) }, { m -> fail(job, m) })
+        if (!job.viaVlc && !Queue.cancel && decoderProblem && !job.removeAudio && job.target != "gif") {
+            // druga próba: dźwięk przez VLC, obraz z oryginału
+            hybrid(job, temp ?: File(cacheDir, "out_${System.currentTimeMillis()}.${Targets.ext(job.target)}"))
             return
         }
+        job.wav?.delete()
+        job.wav = null
         temp?.delete()
         temp = null
         job.status = if (Queue.cancel) "cancel" else "error"
         job.error = when {
             msg.contains("DECODER", true) || msg.contains("UNSUPPORTED", true) -> "Telefon nie obsługuje tego formatu lub kodeka ($msg)"
             msg.contains("ENCODER", true) -> "Kodowanie nie powiodło się – spróbuj mniejszej rozdzielczości ($msg)"
-            job.viaVlc -> "Silnik VLC nie przerobił pliku ($msg)"
+            job.viaVlc -> "Nie udało się ($msg)"
             else -> msg
         }
         next()
@@ -547,18 +606,23 @@ class ConvertService : Service() {
 }
 
 
-/** Konwersja silnikiem VLC: obraz bez zmian, dźwięk (AC3, DTS…) → AAC, kontener MP4. */
+/** VLC: dźwięk z dowolnego pliku (AC3, DTS, TrueHD…) → WAV stereo 48 kHz (bez potrzeby koderów). */
 object VlcConvert {
-    fun run(ctx: Context, job: Job, out: File, progress: (Int) -> Unit, ok: () -> Unit, err: (String) -> Unit) {
+    fun toWav(ctx: Context, job: Job, wav: File, progress: (Int) -> Unit, ok: () -> Unit, err: (String) -> Unit) {
         val h = Handler(Looper.getMainLooper())
         try {
-            val lib = org.videolan.libvlc.LibVLC(ctx, arrayListOf("--no-spu", "--sout-mp4-faststart"))
-            val pfd = ctx.contentResolver.openFileDescriptor(job.uri, "r") ?: throw IllegalStateException("Brak dostępu do pliku")
-            val m = org.videolan.libvlc.Media(lib, pfd.fileDescriptor)
-            val audio = if (job.removeAudio) "acodec=none" else "acodec=mp4a,ab=192,channels=2,samplerate=48000"
-            m.addOption(":sout=#transcode{$audio}:std{access=file,mux=mp4,dst='${out.path}'}")
-            m.addOption(":sout-keep")
+            val lib = org.videolan.libvlc.LibVLC(ctx, arrayListOf("--no-spu", "--no-osd"))
+            val path = Queue.pathOf(ctx, job.uri)
+            val pfd = if (path == null) ctx.contentResolver.openFileDescriptor(job.uri, "r") ?: throw IllegalStateException("Brak dostępu do pliku") else null
+            val m = if (path != null) org.videolan.libvlc.Media(lib, path) else org.videolan.libvlc.Media(lib, pfd!!.fileDescriptor)
+            m.addOption(":sout=#transcode{acodec=s16l,channels=2,samplerate=48000}:std{access=file,mux=wav,dst='${wav.path}'}")
+            m.addOption(":no-sout-video")
             m.addOption(":no-sout-spu")
+            m.addOption(":sout-keep")
+            if (job.clipStart >= 0 && job.clipEnd > job.clipStart) {
+                m.addOption(":start-time=${job.clipStart / 1000.0}")
+                m.addOption(":stop-time=${job.clipEnd / 1000.0}")
+            }
             val p = org.videolan.libvlc.MediaPlayer(lib)
             p.media = m
             m.release()
@@ -566,19 +630,22 @@ object VlcConvert {
             fun close() {
                 try { p.release() } catch (e: Exception) {}
                 try { lib.release() } catch (e: Exception) {}
-                try { pfd.close() } catch (e: Exception) {}
+                try { pfd?.close() } catch (e: Exception) {}
             }
             p.setEventListener { e ->
                 if (finished) return@setEventListener
                 when (e.type) {
                     org.videolan.libvlc.MediaPlayer.Event.PositionChanged -> progress((e.positionChanged * 100).toInt().coerceIn(0, 99))
-                    org.videolan.libvlc.MediaPlayer.Event.EndReached -> {
+                    org.videolan.libvlc.MediaPlayer.Event.EndReached, org.videolan.libvlc.MediaPlayer.Event.Stopped -> {
                         finished = true
-                        h.post { close(); if (out.exists() && out.length() > 1000) ok() else err("pusty plik wynikowy") }
+                        h.postDelayed({
+                            close()
+                            if (wav.exists() && wav.length() > 10_000) ok() else err("VLC nie zdekodował dźwięku")
+                        }, 300)
                     }
                     org.videolan.libvlc.MediaPlayer.Event.EncounteredError -> {
                         finished = true
-                        h.post { close(); err("błąd konwersji") }
+                        h.post { close(); err("VLC nie otworzył pliku") }
                     }
                 }
                 if (Queue.cancel && !finished) {
